@@ -48,10 +48,6 @@ def find_feature(img, radius):
     p_xy = np.zeros([img.shape[0], img.shape[1], dim, dim])
     print('    Building P matrix')
 
-
-
-
-
     g = cv2.getGaussianKernel(dim, 1)
     g = np.dot(g, g.transpose())
     f = np.zeros(img.shape)
@@ -69,27 +65,6 @@ def find_feature(img, radius):
                 f[y, x] = np.linalg.det(h) / t
             else:
                 f[y, x] = 0
-
-
-
-
-    for i in range(dim):
-        for j in range(dim):
-            m = radius - i
-            n = radius - j
-            p_xx[:, :, i, j] = np.roll(np.roll(di_xx, m, axis=0), n, axis=1)
-            p_yy[:, :, i, j] = np.roll(np.roll(di_yy, m, axis=0), n, axis=1)
-            p_xy[:, :, i, j] = np.roll(np.roll(di_xy, m, axis=0), n, axis=1)
-    g = cv2.getGaussianKernel(dim, 1)
-    g = np.dot(g, g.transpose())
-    h_xx = np.sum(np.sum(p_xx*g, axis=2), axis=2)
-    h_yy = np.sum(np.sum(p_yy*g, axis=2), axis=2)
-    h_xy = np.sum(np.sum(p_xy*g, axis=2), axis=2)
-    h = np.zeros([img.shape[0], img.shape[1], 2, 2])
-    h[:, :, 0, 0] = h_xx
-    h[:, :, 0, 1] = h_xy
-    h[:, :, 1, 0] = h_xy
-    h[:, :, 1, 1] = h_yy
 
     # compute corner strength
     print('Computing corner strength')
