@@ -24,15 +24,21 @@ def align_image(img):
 
     return
 
-img = imread('01.JPG')
+img = imread('grid.gif')
 img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 t0 = time.time()
 feat, _ = find_feature(img, 3)
+# feat = cv2.cornerHarris(img,2,3,0.04)
+
 print('Time: ', time.time()-t0)
 
-img[feat] = 0
+img = img*feat
 
 #gy, gx = np.gradient(img)
 plt.figure(1)
-plt.imshow(img, cmap='gray')
+plt.imshow(img, cmap='gray', interpolation='nearest')
+
+plt.figure(2)
+plt.imshow(feat, cmap='gray', interpolation='nearest')
+
 plt.show()
