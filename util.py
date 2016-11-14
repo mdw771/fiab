@@ -15,30 +15,25 @@ name = MPI.Get_processor_name()
 
 def find_local_maxima(a):
 
-    ind = 0
     res = np.ones(a.shape, dtype='bool')
-    for i in range(3):
-        for j in range(3):
-            if i != 1 and j != 1:
-                m = 1 - i
-                n = 1 - j
-                temp = np.roll(np.roll(a, m, axis=0), n, axis=1)
+    for i in range(-1, 2):
+        for j in range(-1, 2):
+            if i != 0 or j != 0:
+                temp = np.roll(np.roll(a, i, axis=0), j, axis=1)
                 res = res * (a > temp)
-                ind += 1
 
     return res
 
 
-def find_feature(img, radius):
+def get_corner_strength(img, radius):
 
     img = img.astype('float32')
 
     # get gradient
     print('Getting gradient')
     di_y, di_x = np.gradient(img)
-    di_y, di_x = gradient(img)
-    di_ys = gaussian_filter(di_y, 3)
-    di_xs = gaussian_filter(di_x, 3)
+    di_ys = gaussian_filter(di_y, 1)
+    di_xs = gaussian_filter(di_x, 1)
     di_xx = di_xs ** 2
     di_yy = di_ys ** 2
     di_xy = di_xs * di_ys
@@ -65,21 +60,12 @@ def find_feature(img, radius):
     trc = np.trace(h, axis1=2, axis2=3)
     nan_loc = np.where(trc != 0)
     det = np.linalg.det(h)
-    # f[nan_loc] = det[nan_loc] / trc[nan_loc]
-    f = det - 0.04*trc**2
-    print(f.min())
+    f[nan_loc] = det[nan_loc] / trc[nan_loc]
+    # f = det - 0.04*trc**2
     f[:dim, :] = 0
     f[-dim:, :] = 0
     f[:, :dim] = 0
     f[:, -dim:] = 0
-
-    plt.figure(2)
-    plt.imshow(f, cmap='gray', interpolation='nearest')
-    plt.show()
-
-    # find strong corners
-    feat = find_local_maxima(f)
-    feat = feat * (f > 10)
 
     # compute orientation
     g = cv2.getGaussianKernel(9, 1)
@@ -98,4 +84,14 @@ def find_feature(img, radius):
 
     gc.collect()
 
-    return feat, u
+    return f, u
+
+
+def find_features(f):
+
+    # find interest points
+    feat = find_local_maxima(f)
+    feat = feat * (f > 10)
+
+    return feat
+

@@ -24,17 +24,20 @@ def align_image(img):
 
     return
 
-img = imread('grid.gif')
+img = imread('01.tif')
+# img = imread('window.png')
 img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 t0 = time.time()
-feat, _ = find_feature(img, 3)
+feat, _ = get_corner_strength(img, 3)
+feat = find_features(feat)
 # feat = cv2.cornerHarris(img,2,3,0.04)
 
 print('Time: ', time.time()-t0)
 
-img = img*feat
+feat = cv2.dilate(feat.astype('float32'), np.ones([3,3])).astype('bool')
+img[feat] = 255
 
-#gy, gx = np.gradient(img)
+
 plt.figure(1)
 plt.imshow(img, cmap='gray', interpolation='nearest')
 
