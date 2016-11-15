@@ -5,6 +5,7 @@ import cv2
 import matplotlib.pyplot as plt
 import gc
 import time
+from itertools import izip
 from mpi4py import MPI
 
 comm = MPI.COMM_WORLD
@@ -87,11 +88,83 @@ def get_corner_strength(img, radius):
     return f, u
 
 
-def find_features(f):
+def find_features(f, n_ip):
+
+    print('Non-maximal suppression')
 
     # find interest points
-    feat = find_local_maxima(f)
-    feat = feat * (f > 10)
+    ip = find_local_maxima(f)
+    ip = ip * (f > 10)
+    f = f * ip
+
+    # adaptive non-maximal suppression
+
+    # mark global maximum
+    feat = np.zeros(f.shape, dtype='bool')
+    # ind = np.unravel_index(np.argmax(f), f.shape)
+    # feat[ind] = 1
+
+    # find minimum radii
+    n_ipnz = np.count_nonzero(ip)
+    if n_ipnz < n_ip:
+        print('Warning: specified feature number larger than actual number of interest points.')
+        n_ip = n_ipnz
+    ipnz = np.nonzero(ip)
+    ind_ls = np.zeros([n_ipnz, 2])
+    ind_ls[:, 0] = ipnz[0]
+    ind_ls[:, 1] = ipnz[1]
+    ind_ls = ind_ls.astype('int')
+    nb_table = np.zeros([n_ipnz, 3])
+    c = 0.9
+    counter = -1
+    mxy = f.shape[0] - 1
+    mxx = f.shape[1] - 1
+    for y, x in ind_ls:
+        counter += 1
+        value = f[y, x] / c
+        found = 0
+        i = 1
+        while not found:
+            smlr_dist = f.shape[0]**2+f.shape[1]**2 + 1
+            if y-i < 0 and y+i > mxy and x-i < 0 and x+i > mxx:
+                found = 1
+                smlr_dist = np.inf
+                nb_table[counter, :] = [y, x, smlr_dist]
+            else:
+                arr = f[int(np.clip(y-i, 0, mxy)), int(np.clip(x-i, 0, mxx)):int(np.clip(x+i, 0, mxx))]
+                smlr_dist = _update_dist(arr, smlr_dist, value, i)
+                arr = f[int(np.clip(y-i, 0, mxy)):int(np.clip(y+i, 0, mxy)), int(np.clip(x+i, 0, mxx))]
+                smlr_dist = _update_dist(arr, smlr_dist, value, i)
+                arr = f[int(np.clip(y+i, 0, mxy)), int(np.clip(x-i+1, 0, mxx)):int(np.clip(x+i+1, 0, mxx))]
+                smlr_dist = _update_dist(arr, smlr_dist, value, i)
+                arr = f[int(np.clip(y-i+1, 0, mxy)):int(np.clip(y+i+1, 0, mxy)), int(np.clip(x-i, 0, mxx))]
+                smlr_dist = _update_dist(arr, smlr_dist, value, i)
+                if smlr_dist < f.shape[0]**2+f.shape[1]**2 + 1:
+                    found = 1
+                    nb_table[counter, :] = [y, x, smlr_dist]
+                i += 1
+
+    # sort in descending order
+    nb_table = nb_table[nb_table[:, 2].argsort()[::-1]]
+
+    # finalize feature matrix
+    for i in range(n_ip):
+        y, x, _ = nb_table[i, :]
+        feat[y, x] = i
 
     return feat
+
+
+def _update_dist(arr, smlr_dist, value, i):
+
+    lgr_ls = arr[arr>value]
+    nz_ls = np.nonzero(lgr_ls)[0]
+    for ii in nz_ls:
+        dist = (ii-i)**2 + i**2
+        if dist < smlr_dist:
+            smlr_dist = dist
+    return smlr_dist
+
+
+
 

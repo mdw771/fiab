@@ -29,12 +29,12 @@ img = imread('01.tif')
 img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 t0 = time.time()
 feat, _ = get_corner_strength(img, 3)
-feat = find_features(feat)
+feat = find_features(feat, 400)
 # feat = cv2.cornerHarris(img,2,3,0.04)
 
 print('Time: ', time.time()-t0)
 
-feat = cv2.dilate(feat.astype('float32'), np.ones([3,3])).astype('bool')
+#feat = cv2.dilate(feat.astype('float32'), np.ones([3,3])).astype('bool')
 img[feat] = 255
 
 
