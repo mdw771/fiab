@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.ndimage.filters import gaussian_filter
+from scipy.ndimage import imread
 from scipy.misc import imrotate
 from scipy.signal import convolve2d
 import cv2
@@ -8,6 +9,7 @@ import gc
 import time
 from itertools import izip
 from mpi4py import MPI
+import operator
 
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
@@ -15,26 +17,43 @@ size = comm.Get_size()
 name = MPI.Get_processor_name()
 
 
-class sift_descriptor(object):
+class panorama(object):
 
-    def __init__(self, nb_theta, nb_g, y, x):
+    def __init__(self, img_ls, n_pi):
 
-        self.nb_theta = nb_theta
-        self.nb_g = nb_g
-        self.coords = (y, x)
+        self.img_ls = []
+        for index in range(len(img_ls)):
+            img = imread(img_ls[index])
+            img = image(img, index)
+            img.get_sift_descriptors(3, n_pi)
+            self.img_ls.append(img)
+        self.n_img = len(img_ls)
 
-    def get_descriptor(self, threshold):
+    def match_panorama(self, threshold):
 
-        self.descriptor = np.zeros(128)
-        bins = np.linspace(0, 2*np.pi, 9)
-        for y in range(4):
-            for x in range(4):
-                arr_theta = self.nb_theta[y*4:(y+1)*4, x*4:(x+1)*4].flatten()
-                arr_g = self.nb_g[y*4:(y+1)*4, x*4:(x+1)*4].flatten()
-                arr_theta[arr_g<threshold] = 10
-                local_hist = np.histogram(arr_theta, bins)
-                ind = (y*4+x) * 8
-                self.descriptor[ind:ind+8] = local_hist
+        for img in self.img_ls[:-1]:
+            img.match_img(self.img_ls[img.index+1], threshold)
+
+    def visualize_match(self, index):
+
+        img1 = self.img_ls[index]
+        img2 = self.img_ls[index+1]
+        full = np.zeros([np.max([img1.shape[0], img2.shape[0]]), img1.shape[1]+img2.shape[1]+10])
+        full[:img1.shape[0], :img1.shape[1]] = img1.img_gray
+        offset_x = img1.shape[1] + 10
+        full[:img2.shape[0], offset_x:offset_x+img2.shape[1]] = img2.img_gray
+        plt.figure()
+        plt.imshow(full, cmap='gray')
+        for f1 in img1.descriptors:
+            if f1.nn1 is not None:
+                y1, x1 = f1.coords
+                y2, x2 = f1.nn1.coords
+                x2 += offset_x
+                plt.plot([x1, x2], [y1, y2])
+        plt.show()
+
+
+
 
 
 class image(object):
@@ -45,16 +64,69 @@ class image(object):
         self.index = index
         self.img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         self.descriptors = []
+        self.shape = img.shape
 
     def get_sift_descriptors(self, radius, n_ip):
 
         g, theta = get_gradient_map(self.img_gray)
         f = get_corner_strength(self.img_gray, 3)
         feat = find_features(f, n_ip)
-        self.descriptors = sift_descriptors(feat, g, theta, self.img_gray, self.descriptors)
+        self.descriptors = find_sift_descriptors(feat, g, theta, self.descriptors, self.index)
+
+    def match_img(self, image2, threshold):
+
+        assert isinstance(image2, image)
+        for f1 in self.descriptors:
+            nn1_ssd = np.inf
+            nn2_ssd = np.inf
+            nn1 = None
+            for f2 in image2.descriptors:
+                ssd = f1.ssd(f2)
+                if ssd < nn1_ssd:
+                    nn1_ssd = ssd
+                    nn1 = f2
+                elif ssd < nn2_ssd:
+                    nn2_ssd = ssd
+            ssd_ratio = nn1_ssd / nn2_ssd
+            if ssd_ratio < threshold:
+                f1.set_best(nn1, ssd_ratio)
 
 
+class sift_descriptor(object):
 
+    def __init__(self, nb_g, nb_theta, y, x, img_index):
+
+        self.nb_theta = nb_theta
+        self.nb_g = nb_g
+        self.coords = (y, x)
+        self.vector = np.zeros(128)
+        self.nn1 = None
+        self.ssd_ratio = None
+        self.img_index = img_index
+
+    def get_descriptor_vector(self, threshold):
+
+        bins = np.linspace(0, 2*np.pi, 9)
+        for y in range(4):
+            for x in range(4):
+                arr_theta = self.nb_theta[y*4:(y+1)*4, x*4:(x+1)*4].flatten()
+                arr_g = self.nb_g[y*4:(y+1)*4, x*4:(x+1)*4].flatten()
+                arr_theta[arr_g<threshold] = 10
+                local_hist, _ = np.histogram(arr_theta, bins)
+                ind = (y*4+x) * 8
+                self.vector[ind:ind+8] = local_hist
+
+    def ssd(self, f2):
+
+        assert isinstance(f2, sift_descriptor)
+        ssd = np.sum((self.vector-f2.vector)**2)
+        return ssd
+
+    def set_best(self, f2, ssd_ratio):
+
+        assert isinstance(f2, sift_descriptor)
+        self.nn1 = f2
+        self.ssd_ratio = ssd_ratio
 
 
 def find_local_maxima(a):
@@ -207,12 +279,14 @@ def find_features(f, n_ip):
     # finalize feature matrix
     for i in range(n_ip):
         y, x, _ = nb_table[i, :]
-        feat[y, x] = i
+        feat[int(y), int(x)] = i
 
     return feat
 
 
-def sift_descriptors(feat, g, theta, img, res_ls):
+def find_sift_descriptors(feat, g, theta, res_ls, index):
+
+    print('SIFT descriptors')
 
     # discard features too close to the edges
     feat[:8, :] = 0
@@ -228,9 +302,18 @@ def sift_descriptors(feat, g, theta, img, res_ls):
     ind_ls[:, 1] = ipnz[1]
     ind_ls = ind_ls.astype('int')
     for y, x in ind_ls:
+        feat_angle = theta[y, x]
+        nb_theta = theta[y-8:y+8, x-8:x+8]
+        nb_mag = g[y-8:y+8, x-8:x+8]
+        # unify neighborhood orientation according to feature pixel
+        nb_theta = nb_theta - feat_angle
+        nb_theta[nb_theta<0] = 2*np.pi + nb_theta[nb_theta<0]
+        nb_theta = np.clip(nb_theta, 0, 2*np.pi)
+        sift = sift_descriptor(nb_mag, nb_theta, y, x, index)
+        sift.get_descriptor_vector(0.5)
+        res_ls.append(sift)
 
-
-
+    return res_ls
 
 
 def _update_dist(arr, smlr_dist, value, i):
