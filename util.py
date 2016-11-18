@@ -1,11 +1,12 @@
 import numpy as np
 from scipy.ndimage.filters import gaussian_filter
 from scipy.ndimage import imread
-from scipy.misc import imrotate
+from scipy.misc import imrotate, comb
 from scipy.signal import convolve2d
 import cv2
 import matplotlib.pyplot as plt
 import gc
+import random
 import time
 from itertools import izip
 from mpi4py import MPI
@@ -29,10 +30,13 @@ class panorama(object):
             self.img_ls.append(img)
         self.n_img = len(img_ls)
 
-    def match_panorama(self, threshold):
+    # def match_panorama(self, threshold):
+    #
+    #     for img in self.img_ls[:-1]:
+    #         img.match_img(self.img_ls[img.index+1], threshold)
 
-        for img in self.img_ls[:-1]:
-            img.match_img(self.img_ls[img.index+1], threshold)
+    def build_panorama(self, match_threshold):
+        pano = self.img_ls[0].img
 
     def visualize_match(self, index):
 
@@ -53,23 +57,26 @@ class panorama(object):
         plt.show()
 
 
-
-
-
 class image(object):
 
     def __init__(self, img, index):
 
         self.img = img
         self.index = index
-        self.img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        if img.ndim == 3:
+            self.img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        else:
+            self.img_gray = img
+            self.img_gray = (self.img_gray - self.img_gray.min()) / (self.img_gray.max() - self.img_gray.min()) * 255
+            self.img_gray = self.img_gray.astype('uint8')
         self.descriptors = []
         self.shape = img.shape
+        self.matched_descriptors = []
 
     def get_sift_descriptors(self, radius, n_ip):
 
         g, theta = get_gradient_map(self.img_gray)
-        f = get_corner_strength(self.img_gray, 3)
+        f = get_corner_strength(self.img_gray, radius)
         feat = find_features(f, n_ip)
         self.descriptors = find_sift_descriptors(feat, g, theta, self.descriptors, self.index)
 
@@ -90,6 +97,53 @@ class image(object):
             ssd_ratio = nn1_ssd / nn2_ssd
             if ssd_ratio < threshold:
                 f1.set_best(nn1, ssd_ratio)
+                self.matched_descriptors.append(f1)
+
+    def get_projection_matrix(self, img0, n_iter, margin):
+
+        assert isinstance(img0, image)
+        inliners = []
+        if len(self.matched_descriptors) == 0:
+            raise ValueError('Current image object must be matched.')
+        else:
+            max_inliners = 0
+            # n_iter = int(np.min([n_iter, comb(len(self.matched_descriptors), 4)]))
+            x0_full = np.zeros([3, len(self.matched_descriptors)])
+            x1_full = np.zeros([3, len(self.matched_descriptors)])
+            for i in range(len(self.matched_descriptors)):
+                x0_full[0, i] = self.matched_descriptors[i].coords[0]
+                x0_full[1, i] = self.matched_descriptors[i].coords[1]
+                x1_full[0, i] = self.matched_descriptors[i].nn1.coords[0]
+                x1_full[1, i] = self.matched_descriptors[i].nn1.coords[1]
+            x0_full[2, :] = 1
+            x1_full[2, :] = 1
+            for i in range(n_iter):
+                temp = []
+                ransac_pairs = random.sample(self.matched_descriptors, 4)
+                x0 = np.array([ransac_pairs[0].coords])
+                x1 = np.array([ransac_pairs[0].nn1.coords])
+                for ii in range(1, len(ransac_pairs)):
+                    x0 = np.append(x0, [ransac_pairs[ii].coords], axis=0)
+                    x1 = np.append(x1, [ransac_pairs[ii].nn1.coords], axis=0)
+                h = _compute_projection_matrix_exact(x0, x1)
+                temp = np.dot(h, x0_full)
+                temp[0, :] = temp[0, :] / temp[2, :]
+                temp[1, :] = temp[1, :] / temp[2, :]
+                diff = (x1_full-temp)**2
+                diff = np.sqrt(diff[0, :]+diff[1, :])
+                if np.count_nonzero(diff < margin) > max_inliners:
+                    max_inliners = np.count_nonzero(diff < margin)
+                    inliners = []
+                    nz = np.nonzero(diff < margin)[0]
+                    for ind in nz:
+                        inliners.append(self.matched_descriptors[ind])
+                x0 = np.array([inliners[0].coords])
+                x1 = np.array([inliners[0].nn1.coords])
+                for ii in range(1, len(inliners)):
+                    x0 = np.append(x0, [inliners[ii].coords], axis=0)
+                    x1 = np.append(x1, [inliners[ii].nn1.coords], axis=0)
+                h = _compute_projection_matrix_lstsq(x0, x1)
+                return h
 
 
 class sift_descriptor(object):
@@ -327,4 +381,31 @@ def _update_dist(arr, smlr_dist, value, i):
     return smlr_dist
 
 
+def _compute_projection_matrix_exact(x0, x1):
 
+    assert isinstance(x0, np.ndarray) and isinstance(x1, np.ndarray)
+    a = np.array([[x0[0, 0], x0[0, 1], 1, 0, 0, 0, -x1[0, 0]*x0[0, 0], -x1[0, 0]*x0[0, 1], -x1[0, 0]],
+                  [0, 0, 0, x0[0, 0], x0[0, 1], 1, -x1[0, 1]*x0[0, 0], -x1[0, 1]*x0[0, 1], -x1[0, 1]],
+                 [x0[1, 0], x0[1, 1], 1, 0, 0, 0, -x1[1, 0]*x0[1, 0], -x1[1, 0]*x0[1, 1], -x1[1, 0]],
+                  [0, 0, 0, x0[1, 0], x0[1, 1], 1, -x1[1, 1]*x0[1, 0], -x1[1, 1]*x0[1, 1], -x1[1, 1]],
+                 [x0[2, 0], x0[2, 1], 1, 0, 0, 0, -x1[2, 0]*x0[2, 0], -x1[2, 0]*x0[2, 1], -x1[2, 0]],
+                  [0, 0, 0, x0[2, 0], x0[2, 1], 1, -x1[2, 1]*x0[2, 0], -x1[2, 1]*x0[2, 1], -x1[2, 1]],
+                 [x0[3, 0], x0[3, 1], 1, 0, 0, 0, -x1[3, 0]*x0[3, 0], -x1[3, 0]*x0[3, 1], -x1[3, 0]],
+                  [0, 0, 0, x0[3, 0], x0[3, 1], 1, -x1[3, 1]*x0[3, 0], -x1[3, 1]*x0[3, 1], -x1[3, 1]]]
+                 )
+    b = np.zeros(9)
+    h = np.linalg.solve(a, b)
+    return h.reshape([3, 3])
+
+
+def _compute_projection_matrix_lstsq(x0, x1):
+
+    assert isinstance(x0, np.ndarray) and isinstance(x1, np.ndarray)
+    a = np.zeros([2*x0.shape[0], 9])
+    for i in range(0, a.shape[0], 2):
+        feat = int(i/2)
+        a[i, :] = [x0[feat, 0], x0[feat, 1], 1, 0, 0, 0, -x1[feat, 0]*x0[feat, 0], -x1[feat, 0]*x0[feat, 1], -x1[feat, 0]]
+        a[i+1, :] = [0, 0, 0, x0[feat, 0], x0[feat, 1], 1, -x1[feat, 1]*x0[feat, 0], -x1[feat, 1]*x0[feat, 1], -x1[feat, 1]]
+    b = np.zeros(9)
+    h = np.dot(np.linalg.pinv(a), b)
+    return h.reshape([3, 3])

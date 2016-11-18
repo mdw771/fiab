@@ -9,6 +9,7 @@ from mpi4py import MPI
 
 
 img_ls = ['01.tif', '02.tif']
+# img_ls = ['0100.tiff', '0101.tiff']
 
 
 pano = panorama(img_ls, 500)
