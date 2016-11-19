@@ -8,10 +8,14 @@ import matplotlib.pyplot as plt
 from mpi4py import MPI
 
 
-img_ls = ['01.tif', '02.tif']
+__author__ = 'Ming Du'
+__email__ = 'mingdu2015@u.northwestern.edu'
+
+
+img_ls = ['02.tif', '03.tif']
 # img_ls = ['0100.tiff', '0101.tiff']
 
 
 pano = panorama(img_ls, 500)
-pano.match_panorama(0.6)
-pano.visualize_match(0)
+pano.build_panorama(0.5)
+# pano.visualize_match(1)

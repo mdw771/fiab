@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.ndimage.filters import gaussian_filter
 from scipy.ndimage import imread
+from scipy.interpolate import interp2d
 from scipy.misc import imrotate, comb
 from scipy.signal import convolve2d
 import cv2
@@ -8,9 +9,16 @@ import matplotlib.pyplot as plt
 import gc
 import random
 import time
+import copy
 from itertools import izip
 from mpi4py import MPI
 import operator
+np.set_printoptions(threshold=100)
+
+
+__author__ = 'Ming Du'
+__email__ = 'mingdu2015@u.northwestern.edu'
+
 
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
@@ -30,18 +38,66 @@ class panorama(object):
             self.img_ls.append(img)
         self.n_img = len(img_ls)
 
-    # def match_panorama(self, threshold):
-    #
-    #     for img in self.img_ls[:-1]:
-    #         img.match_img(self.img_ls[img.index+1], threshold)
-
     def build_panorama(self, match_threshold):
-        pano = self.img_ls[0].img
+
+        pano = copy.copy(self.img_ls[0])
+        for img in self.img_ls[1:]:
+            print('Building panorama: {:d}'.format(img.index))
+            img.match_img(self.img_ls[img.index-1], match_threshold)
+            h = img.get_projection_matrix(pano, 1000, 1)
+            print h
+
+            # determine range of warpped image
+            corners = np.array([[0, 0, img.shape[0]-1, img.shape[0]-1],
+                                [0, img.shape[1]-1, 0, img.shape[1]-1],
+                                [1, 1, 1, 1]])
+            corners = np.dot(h, corners)
+            corners[0, :] = corners[0, :] / corners[2, :]
+            corners[1, :] = corners[1, :] / corners[2, :]
+            print corners
+            corners = np.array([[np.min(np.append(corners[0, :], 0)), np.min(np.append(corners[1, :], 0))],
+                                [np.max(corners[0, :]), np.max(corners[1, :])]])
+            corners[:, 0] = np.clip(corners[:, 0], 0, np.inf)
+            corners[:, 1] = np.clip(corners[:, 1], 0, np.inf)
+            corners = corners.astype('int')
+            print corners
+
+            # map back to unwrapped image space
+            newshape = (corners[1, 0]-corners[0, 0]+1, corners[1, 1]-corners[0, 1]+1)
+            i = np.zeros(newshape)
+            yrange = range(corners[0, 0], corners[1, 0]+1)
+            xrange = range(corners[0, 1], corners[1, 1]+1)
+            xx, yy = np.meshgrid(xrange, yrange)
+            p = np.zeros([3, xx.size])
+            p[0, :] = yy.reshape([1, yy.size])
+            p[1, :] = xx.reshape([1, xx.size])
+            p[2, :] = np.ones(xx.size)
+            print p
+            p0 = np.dot(np.linalg.inv(h), p)
+            p0[0, :] = p0[0, :] / p0[2, :]
+            p0[1, :] = p0[1, :] / p0[2, :]
+            ind_vector = _ravel_array_index(p0[0, :], p0[1, :], img.shape)
+            i = np.interp(ind_vector, range(img.size), img.img_gray.flatten(), left=0, right=0)
+            i = i.reshape(newshape)
+
+
+            f = interp2d(range(img.shape[1]), range(img.shape[0]), img.img_gray, fill_value=0)
+            i = np.zeros([corners[1, 0]-corners[0, 0]+1, corners[1, 1]-corners[0, 1]+1])
+            # print p[0, :]
+            # for y in p[0, :]:
+            #     for x in p[1, :]:
+            #         print y, x
+            #         i[y, x] = f(x, y)[0]
+
+            plt.imshow(i)
+            plt.show()
+
+
 
     def visualize_match(self, index):
 
         img1 = self.img_ls[index]
-        img2 = self.img_ls[index+1]
+        img2 = self.img_ls[index-1]
         full = np.zeros([np.max([img1.shape[0], img2.shape[0]]), img1.shape[1]+img2.shape[1]+10])
         full[:img1.shape[0], :img1.shape[1]] = img1.img_gray
         offset_x = img1.shape[1] + 10
@@ -72,6 +128,7 @@ class image(object):
         self.descriptors = []
         self.shape = img.shape
         self.matched_descriptors = []
+        self.size = self.img_gray.size
 
     def get_sift_descriptors(self, radius, n_ip):
 
@@ -118,32 +175,36 @@ class image(object):
             x0_full[2, :] = 1
             x1_full[2, :] = 1
             for i in range(n_iter):
-                temp = []
-                ransac_pairs = random.sample(self.matched_descriptors, 4)
-                x0 = np.array([ransac_pairs[0].coords])
-                x1 = np.array([ransac_pairs[0].nn1.coords])
-                for ii in range(1, len(ransac_pairs)):
-                    x0 = np.append(x0, [ransac_pairs[ii].coords], axis=0)
-                    x1 = np.append(x1, [ransac_pairs[ii].nn1.coords], axis=0)
-                h = _compute_projection_matrix_exact(x0, x1)
-                temp = np.dot(h, x0_full)
-                temp[0, :] = temp[0, :] / temp[2, :]
-                temp[1, :] = temp[1, :] / temp[2, :]
-                diff = (x1_full-temp)**2
-                diff = np.sqrt(diff[0, :]+diff[1, :])
-                if np.count_nonzero(diff < margin) > max_inliners:
-                    max_inliners = np.count_nonzero(diff < margin)
-                    inliners = []
-                    nz = np.nonzero(diff < margin)[0]
-                    for ind in nz:
-                        inliners.append(self.matched_descriptors[ind])
-                x0 = np.array([inliners[0].coords])
-                x1 = np.array([inliners[0].nn1.coords])
-                for ii in range(1, len(inliners)):
-                    x0 = np.append(x0, [inliners[ii].coords], axis=0)
-                    x1 = np.append(x1, [inliners[ii].nn1.coords], axis=0)
-                h = _compute_projection_matrix_lstsq(x0, x1)
-                return h
+                try:
+                    temp = []
+                    ransac_pairs = random.sample(self.matched_descriptors, 4)
+                    x0 = np.array([ransac_pairs[0].coords])
+                    x1 = np.array([ransac_pairs[0].nn1.coords])
+                    for ii in range(1, len(ransac_pairs)):
+                        x0 = np.append(x0, [ransac_pairs[ii].coords], axis=0)
+                        x1 = np.append(x1, [ransac_pairs[ii].nn1.coords], axis=0)
+                    h = _compute_projection_matrix_exact(x0, x1)
+                    temp = np.dot(h, x0_full)
+                    temp[2, :][temp[2, :]==0] = 1e-10
+                    temp[0, :] = temp[0, :] / temp[2, :]
+                    temp[1, :] = temp[1, :] / temp[2, :]
+                    diff = (x1_full-temp)**2
+                    diff = np.sqrt(diff[0, :]+diff[1, :])
+                    if np.count_nonzero(diff < margin) > max_inliners:
+                        max_inliners = np.count_nonzero(diff < margin)
+                        inliners = []
+                        nz = np.nonzero(diff < margin)[0]
+                        for ind in nz:
+                            inliners.append(self.matched_descriptors[ind])
+                except:
+                    continue
+            x0 = np.array([inliners[0].coords])
+            x1 = np.array([inliners[0].nn1.coords])
+            for ii in range(1, len(inliners)):
+                x0 = np.append(x0, [inliners[ii].coords], axis=0)
+                x1 = np.append(x1, [inliners[ii].nn1.coords], axis=0)
+            h = _compute_projection_matrix_lstsq(x0, x1)
+            return h
 
 
 class sift_descriptor(object):
@@ -384,28 +445,35 @@ def _update_dist(arr, smlr_dist, value, i):
 def _compute_projection_matrix_exact(x0, x1):
 
     assert isinstance(x0, np.ndarray) and isinstance(x1, np.ndarray)
-    a = np.array([[x0[0, 0], x0[0, 1], 1, 0, 0, 0, -x1[0, 0]*x0[0, 0], -x1[0, 0]*x0[0, 1], -x1[0, 0]],
-                  [0, 0, 0, x0[0, 0], x0[0, 1], 1, -x1[0, 1]*x0[0, 0], -x1[0, 1]*x0[0, 1], -x1[0, 1]],
-                 [x0[1, 0], x0[1, 1], 1, 0, 0, 0, -x1[1, 0]*x0[1, 0], -x1[1, 0]*x0[1, 1], -x1[1, 0]],
-                  [0, 0, 0, x0[1, 0], x0[1, 1], 1, -x1[1, 1]*x0[1, 0], -x1[1, 1]*x0[1, 1], -x1[1, 1]],
-                 [x0[2, 0], x0[2, 1], 1, 0, 0, 0, -x1[2, 0]*x0[2, 0], -x1[2, 0]*x0[2, 1], -x1[2, 0]],
-                  [0, 0, 0, x0[2, 0], x0[2, 1], 1, -x1[2, 1]*x0[2, 0], -x1[2, 1]*x0[2, 1], -x1[2, 1]],
-                 [x0[3, 0], x0[3, 1], 1, 0, 0, 0, -x1[3, 0]*x0[3, 0], -x1[3, 0]*x0[3, 1], -x1[3, 0]],
-                  [0, 0, 0, x0[3, 0], x0[3, 1], 1, -x1[3, 1]*x0[3, 0], -x1[3, 1]*x0[3, 1], -x1[3, 1]]]
-                 )
-    b = np.zeros(9)
+    a = np.array([[x0[0, 0], x0[0, 1], 1, 0, 0, 0, -x1[0, 0]*x0[0, 0], -x1[0, 0]*x0[0, 1]],
+                  [x0[1, 0], x0[1, 1], 1, 0, 0, 0, -x1[1, 0]*x0[1, 0], -x1[1, 0]*x0[1, 1]],
+                  [x0[2, 0], x0[2, 1], 1, 0, 0, 0, -x1[2, 0]*x0[2, 0], -x1[2, 0]*x0[2, 1]],
+                  [x0[3, 0], x0[3, 1], 1, 0, 0, 0, -x1[3, 0]*x0[3, 0], -x1[3, 0]*x0[3, 1]],
+                  [0, 0, 0, x0[0, 0], x0[0, 1], 1, -x1[0, 1]*x0[0, 0], -x1[0, 1]*x0[0, 1]],
+                  [0, 0, 0, x0[1, 0], x0[1, 1], 1, -x1[1, 1]*x0[1, 0], -x1[1, 1]*x0[1, 1]],
+                  [0, 0, 0, x0[2, 0], x0[2, 1], 1, -x1[2, 1]*x0[2, 0], -x1[2, 1]*x0[2, 1]],
+                  [0, 0, 0, x0[3, 0], x0[3, 1], 1, -x1[3, 1]*x0[3, 0], -x1[3, 1]*x0[3, 1]]])
+    b = np.array([x1[0, 0], x1[1, 0], x1[2, 0], x1[3, 0], x1[0, 1], x1[1, 1], x1[2, 1], x1[3, 1]])
     h = np.linalg.solve(a, b)
+    h = np.append(h, 1)
     return h.reshape([3, 3])
 
 
 def _compute_projection_matrix_lstsq(x0, x1):
 
     assert isinstance(x0, np.ndarray) and isinstance(x1, np.ndarray)
-    a = np.zeros([2*x0.shape[0], 9])
-    for i in range(0, a.shape[0], 2):
-        feat = int(i/2)
-        a[i, :] = [x0[feat, 0], x0[feat, 1], 1, 0, 0, 0, -x1[feat, 0]*x0[feat, 0], -x1[feat, 0]*x0[feat, 1], -x1[feat, 0]]
-        a[i+1, :] = [0, 0, 0, x0[feat, 0], x0[feat, 1], 1, -x1[feat, 1]*x0[feat, 0], -x1[feat, 1]*x0[feat, 1], -x1[feat, 1]]
-    b = np.zeros(9)
+    a = np.zeros([2*x0.shape[0], 8])
+    for i in range(x0.shape[0]):
+        a[i, :] = [x0[i, 0], x0[i, 1], 1, 0, 0, 0, -x1[i, 0]*x0[i, 0], -x1[i, 0]*x0[i, 1]]
+    for i in range(x0.shape[0]):
+        a[i+x0.shape[0], :] = [0, 0, 0, x0[i, 0], x0[i, 1], 1, -x1[i, 1]*x0[i, 0], -x1[i, 1]*x0[i, 1]]
+    b = np.append(x1[:, 0], x1[:, 1])
     h = np.dot(np.linalg.pinv(a), b)
+    h = np.append(h, 1)
     return h.reshape([3, 3])
+
+
+def _ravel_array_index(y, x, shape):
+
+    ind = y*shape[0] + x
+    return ind
