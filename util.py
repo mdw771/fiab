@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.ndimage.filters import gaussian_filter
 from scipy.ndimage import imread
-from scipy.interpolate import interp2d
+from scipy.interpolate import interp2d, griddata
 from scipy.misc import imrotate, comb
 from scipy.signal import convolve2d
 import cv2
@@ -13,7 +13,6 @@ import copy
 from itertools import izip
 from mpi4py import MPI
 import operator
-np.set_printoptions(threshold=100)
 
 
 __author__ = 'Ming Du'
@@ -38,14 +37,13 @@ class panorama(object):
             self.img_ls.append(img)
         self.n_img = len(img_ls)
 
-    def build_panorama(self, match_threshold):
+    def build_panorama(self, match_threshold, interpolate=True):
 
         pano = copy.copy(self.img_ls[0])
         for img in self.img_ls[1:]:
             print('Building panorama: {:d}'.format(img.index))
-            img.match_img(self.img_ls[img.index-1], match_threshold)
-            h = img.get_projection_matrix(pano, 1000, 1)
-            print h
+            img.match_img(pano, match_threshold)
+            h = img.get_projection_matrix(pano, n_iter=1000, margin=1)
 
             # determine range of warpped image
             corners = np.array([[0, 0, img.shape[0]-1, img.shape[0]-1],
@@ -54,45 +52,67 @@ class panorama(object):
             corners = np.dot(h, corners)
             corners[0, :] = corners[0, :] / corners[2, :]
             corners[1, :] = corners[1, :] / corners[2, :]
-            print corners
+            true_corners = np.array([[np.min(corners[0, :]), np.min(corners[1, :])],
+                                     [np.max(corners[0, :]), np.max(corners[1, :])]])
             corners = np.array([[np.min(np.append(corners[0, :], 0)), np.min(np.append(corners[1, :], 0))],
                                 [np.max(corners[0, :]), np.max(corners[1, :])]])
             corners[:, 0] = np.clip(corners[:, 0], 0, np.inf)
+            true_corners[:, 0] = np.clip(true_corners[:, 0], 0, np.inf)
             corners[:, 1] = np.clip(corners[:, 1], 0, np.inf)
+            true_corners[:, 1] = np.clip(true_corners[:, 1], 0, np.inf)
             corners = corners.astype('int')
-            print corners
+            true_corners = true_corners.astype('int')
 
             # map back to unwrapped image space
             newshape = (corners[1, 0]-corners[0, 0]+1, corners[1, 1]-corners[0, 1]+1)
-            i = np.zeros(newshape)
-            yrange = range(corners[0, 0], corners[1, 0]+1)
-            xrange = range(corners[0, 1], corners[1, 1]+1)
+            yrange = range(true_corners[0, 0], true_corners[1, 0]+1)
+            xrange = range(true_corners[0, 1], true_corners[1, 1]+1)
             xx, yy = np.meshgrid(xrange, yrange)
             p = np.zeros([3, xx.size])
             p[0, :] = yy.reshape([1, yy.size])
             p[1, :] = xx.reshape([1, xx.size])
             p[2, :] = np.ones(xx.size)
-            print p
             p0 = np.dot(np.linalg.inv(h), p)
             p0[0, :] = p0[0, :] / p0[2, :]
             p0[1, :] = p0[1, :] / p0[2, :]
-            ind_vector = _ravel_array_index(p0[0, :], p0[1, :], img.shape)
-            i = np.interp(ind_vector, range(img.size), img.img_gray.flatten(), left=0, right=0)
-            i = i.reshape(newshape)
+            print('    Rebuilding warped image')
+            if interpolate:
+                f0 = interp2d(range(img.shape[1]), range(img.shape[0]), img.img[:, :, 0], fill_value=0)
+                f1 = interp2d(range(img.shape[1]), range(img.shape[0]), img.img[:, :, 1], fill_value=0)
+                f2 = interp2d(range(img.shape[1]), range(img.shape[0]), img.img[:, :, 2], fill_value=0)
+            pano_img = np.zeros([np.max([pano.shape[0], newshape[0]]), np.max([pano.shape[1], newshape[1]]), 3])
+            pano_img[...] = np.nan
+            coords = np.round(np.array([p0[0, :], p0[1, :], p[0, :], p[1, :]]).transpose())
+            for y0, x0, y, x in coords:
+                if 0 < y0 < img.shape[0] and 0 < x0 < img.shape[1]:
+                    if interpolate:
+                        value0 = f0(x0, y0)[0]
+                        value1 = f1(x0, y0)[0]
+                        value2 = f2(x0, y0)[0]
+                        value = np.array([value0, value1, value2])
+                    else:
+                        value = img.img[int(y0), int(x0), :]
+                    pano_img[int(y), int(x), :] = value
+            pano_img[:pano.shape[0], :pano.shape[1], :] = pano.img
+            des_temp = pano.descriptors
+            mdes_temp = pano.matched_descriptors
+            pano = image(pano_img.astype('uint8'), 0)
+            pano.descriptors = des_temp
+            pano.matched_descriptors = mdes_temp
 
+            # update feature coordinates
+            print('Updating feature coordinates in pano object')
+            for f in img.descriptors:
+                ff = copy.copy(f)
+                p0 = np.array([[ff.coords[0]], [ff.coords[1]], [1]])
+                p = np.dot(h, p0)
+                p[0, 0] = p[0, 0] / p[2, 0]
+                p[1, 0] = p[1, 0] / p[2, 0]
+                ff.coords = (p[0, 0], p[1, 0])
+                pano.descriptors.append(ff)
 
-            f = interp2d(range(img.shape[1]), range(img.shape[0]), img.img_gray, fill_value=0)
-            i = np.zeros([corners[1, 0]-corners[0, 0]+1, corners[1, 1]-corners[0, 1]+1])
-            # print p[0, :]
-            # for y in p[0, :]:
-            #     for x in p[1, :]:
-            #         print y, x
-            #         i[y, x] = f(x, y)[0]
-
-            plt.imshow(i)
-            plt.show()
-
-
+        pano.img[np.isnan(pano.img)] = 0
+        return pano.img
 
     def visualize_match(self, index):
 
@@ -117,14 +137,19 @@ class image(object):
 
     def __init__(self, img, index):
 
-        self.img = img
+
         self.index = index
-        if img.ndim == 3:
-            self.img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        else:
+        if img.ndim == 2:
+            self.img = np.zeros([img.shape[0], img.shape[1], 3])
+            self.img[:, :, 0] = img
+            self.img[:, :, 1] = img
+            self.img[:, :, 2] = img
             self.img_gray = img
             self.img_gray = (self.img_gray - self.img_gray.min()) / (self.img_gray.max() - self.img_gray.min()) * 255
             self.img_gray = self.img_gray.astype('uint8')
+        elif img.ndim == 3:
+            self.img = img
+            self.img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         self.descriptors = []
         self.shape = img.shape
         self.matched_descriptors = []
@@ -156,7 +181,7 @@ class image(object):
                 f1.set_best(nn1, ssd_ratio)
                 self.matched_descriptors.append(f1)
 
-    def get_projection_matrix(self, img0, n_iter, margin):
+    def get_projection_matrix(self, img0, n_iter=1000, margin=1):
 
         assert isinstance(img0, image)
         inliners = []
@@ -198,6 +223,7 @@ class image(object):
                             inliners.append(self.matched_descriptors[ind])
                 except:
                     continue
+            print('    Number of feature pairs used for LSQ is '+str(len(inliners)))
             x0 = np.array([inliners[0].coords])
             x1 = np.array([inliners[0].nn1.coords])
             for ii in range(1, len(inliners)):
@@ -475,5 +501,9 @@ def _compute_projection_matrix_lstsq(x0, x1):
 
 def _ravel_array_index(y, x, shape):
 
+    y[y < 0] = -1
+    y[y >= shape[0]] = -1
+    x[x < 0] = -1
+    x[x >= shape[1]] = -1
     ind = y*shape[0] + x
     return ind
