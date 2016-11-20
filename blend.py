@@ -69,8 +69,8 @@ def pyramid_blend(img1, img2, depth=5):
     global_res[...] = np.nan
     global_res[global_corners[0, 0]:global_corners[1, 0]+1, global_corners[0, 1]:global_corners[1, 1]+1, :] = res
     pano = pano_img2.copy()
-    pano[:img1.shape[0], :img1.shape[1]] = img1
-    pano[np.isfinite(res)] = global_res[np.isfinite(res)]
+    pano[np.isfinite(pano_img1)] = pano_img1[np.isfinite(pano_img1)]
+    pano[np.isfinite(global_res)] = global_res[np.isfinite(global_res)]
     gc.collect()
     return pano
 
