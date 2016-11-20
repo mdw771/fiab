@@ -65,9 +65,12 @@ def pyramid_blend(img1, img2, depth=5):
     # reinsert
     nanmask = nanmask1 * nanmask2
     res[nanmask] = np.nan
+    global_res = np.zeros(pano_img1.shape)
+    global_res[...] = np.nan
+    global_res[global_corners[0, 0]:global_corners[1, 0]+1, global_corners[0, 1]:global_corners[1, 1]+1, :] = res
     pano = pano_img2.copy()
     pano[:img1.shape[0], :img1.shape[1]] = img1
-    pano[global_corners[0, 0]:global_corners[1, 0]+1, global_corners[0, 1]:global_corners[1, 1]+1, :] = res
+    pano[np.isfinite(res)] = global_res[np.isfinite(res)]
     gc.collect()
     return pano
 
