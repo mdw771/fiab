@@ -1,8 +1,8 @@
+from blend import *
 import numpy as np
 from scipy.ndimage.filters import gaussian_filter
 from scipy.ndimage import imread
-from scipy.interpolate import interp2d, griddata
-from scipy.misc import imrotate, comb
+from scipy.interpolate import interp2d
 from scipy.signal import convolve2d
 import cv2
 import matplotlib.pyplot as plt
@@ -10,13 +10,7 @@ import gc
 import random
 import time
 import copy
-from itertools import izip
 from mpi4py import MPI
-import operator
-
-
-__author__ = 'Ming Du'
-__email__ = 'mingdu2015@u.northwestern.edu'
 
 
 comm = MPI.COMM_WORLD
@@ -37,7 +31,7 @@ class panorama(object):
             self.img_ls.append(img)
         self.n_img = len(img_ls)
 
-    def build_panorama(self, match_threshold, interpolate=True):
+    def build_panorama(self, match_threshold, interpolate=True, pyramid_depth=5):
 
         pano = copy.copy(self.img_ls[0])
         for img in self.img_ls[1:]:
@@ -93,10 +87,13 @@ class panorama(object):
                     else:
                         value = img.img[int(y0), int(x0), :]
                     pano_img[int(y), int(x), :] = value
-            pano_img[:pano.shape[0], :pano.shape[1], :] = pano.img
+
+            # blend
+            print('Blending')
+            pano_img = pyramid_blend(pano.img, pano_img, depth=pyramid_depth)
             des_temp = pano.descriptors
             mdes_temp = pano.matched_descriptors
-            pano = image(pano_img.astype('uint8'), 0)
+            pano = image(pano_img, 0)
             pano.descriptors = des_temp
             pano.matched_descriptors = mdes_temp
 
@@ -137,7 +134,6 @@ class image(object):
 
     def __init__(self, img, index):
 
-
         self.index = index
         if img.ndim == 2:
             self.img = np.zeros([img.shape[0], img.shape[1], 3])
@@ -149,11 +145,11 @@ class image(object):
             self.img_gray = self.img_gray.astype('uint8')
         elif img.ndim == 3:
             self.img = img
-            self.img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            self.img_gray = cv2.cvtColor(img.astype('uint16'), cv2.COLOR_BGR2GRAY)
         self.descriptors = []
         self.shape = img.shape
         self.matched_descriptors = []
-        self.size = self.img_gray.size
+        self.size = int(self.img.size/3)
 
     def get_sift_descriptors(self, radius, n_ip):
 

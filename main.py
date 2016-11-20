@@ -9,12 +9,7 @@ import matplotlib.pyplot as plt
 from mpi4py import MPI
 
 
-__author__ = 'Ming Du'
-__email__ = 'mingdu2015@u.northwestern.edu'
-
-
-img_ls = ['01.tif', '02.tif', '03.tif']
-# img_ls = ['0100.tiff', '0101.tiff']
+img_ls = ['IMG_1158.jpg', 'IMG_1159.jpg', 'IMG_1160.jpg', 'IMG_1161.jpg']
 
 
 pano = panorama(img_ls, 1000)
