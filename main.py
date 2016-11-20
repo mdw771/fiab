@@ -12,7 +12,7 @@ from mpi4py import MPI
 img_ls = ['IMG_1158.jpg', 'IMG_1159.jpg', 'IMG_1160.jpg', 'IMG_1161.jpg']
 
 
-pano = panorama(img_ls, 1000)
+pano = panorama(img_ls, n_pi=1000)
 pano_img = pano.build_panorama(0.65, interpolate=False)
 # pano.visualize_match(1)
 imsave('panorama.png', pano_img)
